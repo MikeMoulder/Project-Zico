@@ -16,7 +16,7 @@ different from what actually happened.
 
 Requirements: Node.js 20.18.2 or newer. No wallet is needed to run the server.
 
-When the package is published, install it globally:
+Install it globally:
 
 ```bash
 npm install --global zico-agent-graph
@@ -36,10 +36,10 @@ run Zico and copy the matching instructions into that folder:
 
 ```bash
 # Claude Code
-npx zico-agent-graph@0.1.3 init --agent claude
+npx zico-agent-graph@0.2.0 init --agent claude
 
 # Codex
-npx zico-agent-graph@0.1.3 init --agent codex
+npx zico-agent-graph@0.2.0 init --agent codex
 ```
 
 You can use `--agent both` when the project will be opened by either tool.
