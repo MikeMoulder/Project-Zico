@@ -28,7 +28,7 @@ zico task "<objective>" --budget <amount>
 zico search "<capability>" --max-price <amount>
 zico decide "<resource-url>" --reason "<why this service fits>"
 zico call "<resource-url>" --input '<json>'
-zico note "<important finding>"
+zico note "<important finding>" [--type analysis|synthesis]
 zico done --summary "<truthful result>"
 ```
 
@@ -37,6 +37,16 @@ schemas before calling. Search costs nothing; live calls may spend real USDC.
 Ask for explicit approval before any live paid call, and always set a clear
 budget. Use `zico call`, not direct `circle services pay`, so the graph stays
 complete.
+
+Search broadly once rather than probing with several near-identical queries.
+A repeated query reuses its node, but each new phrasing adds another search and
+another candidate group to the graph.
+
+Results include vanilla x402 sellers as well as Circle Gateway sellers. Check
+the `gasless` field: a vanilla seller needs on-chain USDC on its own chain and
+settles a block later, where a gasless seller settles through Gateway. The
+catalog is cached for 24 hours, so report a missing service rather than
+bypassing Zico to reach it.
 
 ## If Circle setup is missing
 

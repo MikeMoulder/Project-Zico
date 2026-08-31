@@ -51,6 +51,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
     candidateNodes: new Map(), // resource -> nodeId, every candidate this run
     candidates: new Map(),     // resource -> normalized service, every candidate this run
     lastSearch: new Map(),     // resource -> service, the most recent search only
+    searchCache: new Map(),    // normalized query -> {searchNode, groupNode, results}
   };
 
   log.on('event', (ev) => {
@@ -60,6 +61,13 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
 
   // ---- verbs ------------------------------------------------------------
 
+  const shapeResult = (s) => ({
+    resource: s.resource, brand: s.brand, provider: s.provider,
+    category: s.category, price: s.price, description: s.description,
+    network: s.network, gasless: s.gasless,
+    required: s.required, params: Object.keys(s.params ?? {}),
+  });
+
   const verbs = {
     async task({ objective, budget }) {
       const taskId = `task_${shortId()}`;
@@ -68,6 +76,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       session.candidateNodes.clear();
       session.candidates.clear();
       session.lastSearch.clear();
+      session.searchCache.clear();
 
       await log.emitEvent(EV.TASK_CREATED, {
         taskId, prompt: objective, budget: budget ?? null, mode: executor.mode,
@@ -89,6 +98,23 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       requireTask();
       const { taskId } = session;
 
+      // Re-running a query used to emit a fresh search node and a fresh block of
+      // candidates, so probing the marketplace a few times fanned the graph out
+      // sideways. Same query, same node.
+      const cacheKey = [
+        String(query).trim().toLowerCase().replace(/\s+/g, ' '),
+        maxPrice ?? '', category ?? '',
+      ].join('|');
+      const cached = session.searchCache.get(cacheKey);
+      if (cached) {
+        session.lastSearchNode = cached.searchNode;
+        session.lastSearch = new Map(cached.results.map((s) => [s.resource, s]));
+        return {
+          query, reused: true, found: cached.results.length, scanned: catalog.callable,
+          results: cached.results.map(shapeResult),
+        };
+      }
+
       const searchNode = `node_${shortId()}`;
       session.lastSearchNode = searchNode;
       await log.emitEvent(EV.NODE_ADDED, {
@@ -101,36 +127,53 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
 
       // Candidates from the previous search that were never chosen would otherwise
       // sit pending forever and make the graph look stuck. Retire them.
+      const superseded = new Set();
       for (const resource of session.lastSearch.keys()) {
         const prev = session.candidateNodes.get(resource);
-        if (prev) await log.emitEvent(EV.NODE_REJECTED, { taskId, nodeId: prev, reason: 'superseded by a later search' });
+        if (prev) superseded.add(prev);
+      }
+      for (const nodeId of superseded) {
+        await log.emitEvent(EV.NODE_REJECTED, { taskId, nodeId, reason: 'superseded by a later search' });
       }
       session.lastSearch.clear();
 
       const results = searchCatalog(catalog, query, {
         maxPrice: maxPrice ?? Infinity,
         category: category ?? null,
-        gaslessOnly: true,
+        gaslessOnly: false,
         limit,
       });
 
-      let first = true;
-      for (const s of results) {
-        if (!first) await sleep(pace);
-        first = false;
-        const nodeId = `node_${shortId()}`;
-        session.candidateNodes.set(s.resource, nodeId);
-        session.candidates.set(s.resource, s);
-        session.lastSearch.set(s.resource, s);
+      // A result set is one node, not one node per hit. Thirty boxes reading
+      // "agentmail" told the operator nothing that "5 candidates" does not, and
+      // they crowded out the two nodes that actually did work.
+      let groupNode = null;
+      if (results.length) {
+        groupNode = `node_${shortId()}`;
+        await sleep(pace);
+        const brands = [...new Set(results.map((s) => s.brand))];
         await log.emitEvent(EV.NODE_ADDED, {
-          taskId, nodeId, parents: [searchNode],
+          taskId, nodeId: groupNode, parents: [searchNode],
           nodeType: NODE.CANDIDATE,
-          name: s.brand,
-          description: s.description,
-          estCost: s.price,
-          service: slim(s),
+          name: results.length === 1 ? results[0].brand : `${results.length} candidates`,
+          description: brands.slice(0, 3).join(', ') + (brands.length > 3 ? ` +${brands.length - 3} more` : ''),
+          estCost: Math.min(...results.map((s) => s.price)),
+          service: slim(results[0]),
+          meta: {
+            group: true,
+            count: results.length,
+            candidates: results.map((s) => ({
+              brand: s.brand, price: s.price, resource: s.resource, gasless: s.gasless,
+            })),
+          },
         });
       }
+      for (const s of results) {
+        session.candidateNodes.set(s.resource, groupNode);
+        session.candidates.set(s.resource, s);
+        session.lastSearch.set(s.resource, s);
+      }
+      session.searchCache.set(cacheKey, { searchNode, groupNode, results });
 
       await log.emitEvent(EV.NODE_COMPLETED, {
         taskId, nodeId: searchNode,
@@ -141,12 +184,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
         query,
         found: results.length,
         scanned: catalog.callable,
-        results: results.map((s) => ({
-          resource: s.resource, brand: s.brand, provider: s.provider,
-          category: s.category, price: s.price, description: s.description,
-          network: s.network, gasless: s.gasless,
-          required: s.required, params: Object.keys(s.params ?? {}),
-        })),
+        results: results.map(shapeResult),
       };
     },
 
@@ -188,10 +226,16 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
 
       // Grey out the rest of *this* search, so the graph shows the road not taken
       // without retroactively rejecting candidates from earlier steps.
+      // Every resource in a group points at the same node, so rejecting per
+      // resource would grey out the node the choice was just attached to.
+      const dropped = new Set();
       for (const resource of pool.keys()) {
         if (resource === choose) continue;
         const nodeId = session.candidateNodes.get(resource);
-        if (!nodeId) continue;
+        if (!nodeId || nodeId === chosenNode) continue;
+        dropped.add(nodeId);
+      }
+      for (const nodeId of dropped) {
         await sleep(Math.round(pace * 0.45));
         await log.emitEvent(EV.NODE_REJECTED, { taskId, nodeId, reason: 'not selected' });
       }

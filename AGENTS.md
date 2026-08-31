@@ -27,8 +27,18 @@ For every Circle marketplace task, use this sequence:
 3. Review the returned descriptions, prices, schemas, networks, and providers.
 4. `zico decide "<resource-url>" --reason "<specific reason>"` after choosing.
 5. `zico call "<resource-url>" --input '<json>'` to invoke the service.
-6. Use `zico note "<finding>"` for important analysis or corrections.
+6. Use `zico note "<finding>" [--type analysis|synthesis]` for important
+   analysis or corrections. Pass `--parents <id,id>` to merge branches.
 7. `zico done --summary "<truthful result>"` when the task is complete.
+
+Search broadly once instead of probing with several near-identical queries.
+Re-running the same query reuses its existing node, but every new phrasing adds
+another search and another candidate group to the graph.
+
+Results cover both Circle Gateway sellers and vanilla x402 sellers. Read the
+`gasless` field on each result: a gasless seller settles through Gateway, while
+a vanilla seller needs on-chain USDC on that seller's own chain and settles a
+block later. Both are callable; the difference is speed and which balance pays.
 
 Search is free. A live `zico call` can spend real USDC. Never make a live paid
 call without the user's explicit approval and a clear task budget. Simulation
@@ -36,6 +46,9 @@ is the default and does not move money.
 
 Do not call `circle services pay` directly for a task that should appear in the
 graph. Use Zico's `call` command so the payment and result are recorded.
+
+The catalog is cached for 24 hours. If a service you expect is missing, say so
+plainly rather than reaching for `circle services pay` to work around it.
 
 ## Circle setup and safety
 

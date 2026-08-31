@@ -290,6 +290,8 @@ pre{margin:0;padding:9px 10px;background:#050505;border:1px solid var(--line);
 .ev time{font-family:var(--mono);font-size:9.5px;color:var(--ink-4);flex:0 0 auto}
 .ev .m{color:var(--ink-3);flex:1;word-break:break-word}
 .ev .m b{color:var(--ink-2);font-weight:500}
+.ev .rep{font-family:var(--mono);font-size:9px;color:var(--ink-4);
+  border:1px solid var(--line-2);padding:0 4px;margin-left:5px;font-weight:600}
 .ev.ok .m b{color:var(--ok)}
 .ev.err .m b{color:var(--bad)}
 .ev.pay .m{font-family:var(--mono);font-size:10.5px;color:var(--money)}
@@ -443,7 +445,7 @@ function layout(){
     if(!rows.has(n.depth))rows.set(n.depth,[]);
     rows.get(n.depth).push(n);
   }
-  const cols=k=>k<=3?k:k<=6?3:4;
+  const cols=k=>k<=3?k:Math.min(6,Math.ceil(Math.sqrt(k)));
 
   let rowY=0;
   for(const d of [...rows.keys()].sort((a,b)=>a-b)){
@@ -739,6 +741,13 @@ function inspect(n){
   if(n.error)h+=row('error',n.error);
   if(s.resource)h+=row('endpoint',s.resource,true);
 
+  if(n.meta&&n.meta.group&&n.meta.candidates&&n.meta.candidates.length){
+    h+=row('candidates',n.meta.count??n.meta.candidates.length);
+    h+=`<div class="sect"><h3>Candidates</h3>`;
+    for(const c of n.meta.candidates)
+      h+=`<div class="alt"><span>${esc(c.brand)}</span><b>${Number(c.price).toFixed(4)}</b></div>`;
+    h+=`</div>`;
+  }
   if(n.type==='decision'&&n.meta){
     h+=`<div class="sect"><h3>Rationale</h3><p class="why">${esc(n.meta.reason||'not recorded')}</p></div>`;
     h+=row('considered',n.meta.consideredCount??0);
@@ -756,13 +765,24 @@ function inspect(n){
   document.getElementById('inspector').innerHTML=h;
 }
 
+/* Forty consecutive "candidate agentmail 0.0100" lines are one fact, not forty.
+   Collapse a repeat into a counter on the line already on screen. */
+let lastEv={html:null,el:null,n:1};
 function feed(html,cls){
   const el=document.getElementById('feed');
+  if(lastEv.html===html&&lastEv.el&&lastEv.el.parentNode===el){
+    lastEv.n++;
+    lastEv.el.querySelector('.m').innerHTML=`${html}<b class="rep">\u00d7${lastEv.n}</b>`;
+    el.scrollTop=el.scrollHeight;
+    document.getElementById('evCount').textContent=++evCount;
+    return;
+  }
   const d=document.createElement('div');
   d.className='ev '+(cls||'');
   d.innerHTML=`<time>${new Date().toTimeString().slice(0,8)}</time><div class="m">${html}</div>`;
   el.appendChild(d); el.scrollTop=el.scrollHeight;
   while(el.children.length>400)el.removeChild(el.firstChild);
+  lastEv={html,el:d,n:1};
   document.getElementById('evCount').textContent=++evCount;
 }
 
@@ -858,7 +878,12 @@ function apply(e){
         type:e.nodeType,name:e.name,description:e.description,service:e.service,meta:e.meta,
         input:e.input,estCost:e.estCost||0,cost:0,status:'pending',
         durationMs:null,error:null,startedAt:null,output:null,el:null});
-      if(e.nodeType==='candidate')feed(`candidate <b>${esc(e.name)}</b> ${Number(e.estCost||0).toFixed(4)}`);
+      if(e.nodeType==='candidate'){
+        const c=e.meta&&e.meta.count?e.meta.count:1;
+        feed(c>1
+          ?`<b>${esc(e.name)}</b> from ${Number(e.estCost||0).toFixed(4)}`
+          :`candidate <b>${esc(e.name)}</b> ${Number(e.estCost||0).toFixed(4)}`);
+      }
       if(e.nodeType==='decision')feed(`<b>${esc(e.name)}</b>`);
       break;
     case 'node_started':{
