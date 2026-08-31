@@ -14,7 +14,7 @@ const run = promisify(execFile);
 const CHAIN = 'BASE';
 
 async function circle(args, { timeout = 30_000 } = {}) {
-  const { stdout } = await run('circle', args, { timeout, windowsHide: true });
+  const { stdout } = await run('circle', args, { timeout, windowsHide: true, shell: process.platform === 'win32' });
   return stdout;
 }
 
@@ -65,7 +65,10 @@ export async function preflight({ chain = CHAIN, address = null } = {}) {
   let wallets = [];
   try {
     wallets = parse(await circle(['wallet', 'list', '--chain', chain, '--type', 'agent', '--output', 'json'])) ?? [];
-    if (!Array.isArray(wallets)) wallets = wallets.wallets ?? wallets.data ?? [];
+    if (!Array.isArray(wallets)) {
+      wallets = wallets.data?.wallets ?? wallets.wallets
+        ?? (Array.isArray(wallets.data) ? wallets.data : []);
+    }
   } catch { /* fall through to the empty-wallet branch */ }
 
   if (!wallets.length) {
@@ -94,7 +97,13 @@ export async function preflight({ chain = CHAIN, address = null } = {}) {
   ]) {
     try {
       const b = parse(await circle(args));
-      balances[key] = Number(b?.balance ?? b?.usdc ?? b?.amount ?? 0) || 0;
+      const d = b?.data ?? b;
+      const rows = Array.isArray(d?.balances) ? d.balances : null;
+      balances[key] = rows?.length
+        ? rows
+            .filter((x) => String(x?.token?.symbol ?? x?.token ?? '').toUpperCase() === 'USDC')
+            .reduce((sum, x) => sum + (Number(x?.amount) || 0), 0)
+        : Number(d?.total ?? d?.balance ?? d?.usdc ?? d?.amount ?? 0) || 0;
     } catch { balances[key] = 0; }
   }
 

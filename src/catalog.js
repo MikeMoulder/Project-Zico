@@ -2,7 +2,7 @@
 // Public endpoint: no API key, no account. https://api.circle.com/v2/x402/discovery/resources
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const DATA_ROOT = process.env.ZICO_DATA_DIR ?? join(process.cwd(), '.zico');
 const CACHE = join(DATA_ROOT, 'catalog.json');
@@ -144,7 +144,7 @@ export async function loadCatalog({ refresh = false } = {}) {
  * Scoring is deliberately dumb for now — an embedding index replaces this later.
  */
 export function search(catalog, query, opts = {}) {
-  const { maxPrice = Infinity, gaslessOnly = true, category = null, limit = 10 } = opts;
+  const { maxPrice = Infinity, gaslessOnly = false, category = null, limit = 10 } = opts;
   const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean);
 
   const scored = [];

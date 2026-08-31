@@ -58,7 +58,7 @@ function circleExecutor({ chain = 'BASE', address = null, timeout = 180_000 } = 
 
       let stdout;
       try {
-        ({ stdout } = await run('circle', args, { timeout, windowsHide: true }));
+        ({ stdout } = await run('circle', args, { timeout, windowsHide: true, shell: process.platform === 'win32' }));
       } catch (err) {
         const raw = String(err.stderr || err.stdout || err.message || '').trim();
         return { ok: false, error: firstLine(raw) || 'circle services pay failed', cost: 0, raw };
@@ -80,20 +80,45 @@ function circleExecutor({ chain = 'BASE', address = null, timeout = 180_000 } = 
         ok: true,
         cost: paid ?? service.price,
         estimated: paid === null,
-        txHash: body.transactionHash ?? body.txHash ?? body.payment?.transactionHash ?? null,
-        output: body.data ?? body.result ?? body.response ?? body,
+        txHash: pickTxHash(body),
+        output: body.data?.response ?? body.data ?? body.result ?? body.response ?? body,
       };
     },
   };
 }
 
-/** USDC amounts arrive as decimals or 6-dp base units depending on the seller. */
+/**
+ * USDC amounts arrive as decimals, 6-dp base units, or a display string such as
+ * "$0.02 USDC" depending on the seller. The Circle CLI nests the settled payment
+ * under `data.payment`, so check there before the flat shapes.
+ */
 function pickAmount(body) {
-  const raw = body?.payment?.amount ?? body?.amount ?? body?.cost ?? body?.paid;
+  const d = body?.data ?? body;
+  const raw = d?.payment?.amount ?? body?.payment?.amount
+    ?? d?.amount ?? body?.amount ?? body?.cost ?? body?.paid;
   if (raw === undefined || raw === null) return null;
-  const n = Number(raw);
+  const n = typeof raw === 'string' ? Number(raw.replace(/[^0-9.]/g, '')) : Number(raw);
   if (!Number.isFinite(n) || n < 0) return null;
   return n > 1000 ? n / 1e6 : n;
+}
+
+/**
+ * The CLI reports no bare tx hash for an x402 call — the settlement hash is inside
+ * the base64 `receipt` blob. Decode it so the graph can link the payment on-chain.
+ */
+function pickTxHash(body) {
+  const d = body?.data ?? body;
+  const direct = body?.transactionHash ?? body?.txHash
+    ?? d?.payment?.transactionHash ?? d?.payment?.txHash;
+  if (direct) return direct;
+  const receipt = d?.payment?.receipt ?? body?.payment?.receipt;
+  if (typeof receipt !== 'string') return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(receipt, 'base64').toString('utf8'));
+    return decoded?.transaction ?? decoded?.transactionHash ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Collapse a CLI error blob to one readable line for the graph. */
