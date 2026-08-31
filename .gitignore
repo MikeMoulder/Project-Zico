@@ -1,0 +1,9 @@
+node_modules/
+.cache/
+.zico/
+.npm-cache/
+*.tgz
+
+# Keep the public repository focused on the README.
+*.md
+!README.md

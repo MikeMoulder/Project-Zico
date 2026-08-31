@@ -1,0 +1,29 @@
+{
+  "name": "zico-agent-graph",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live execution graph for AI agents using Circle Agent Stack services.",
+  "bin": {
+    "zico": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "web",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "serve": "node src/cli.js serve"
+  },
+  "engines": {
+    "node": ">=20.18.2"
+  },
+  "keywords": [
+    "ai-agents",
+    "circle",
+    "usdc",
+    "x402",
+    "observability",
+    "execution-graph"
+  ]
+}
