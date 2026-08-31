@@ -2,6 +2,7 @@
 // zico — marketplace tools + live graph. The agent driving these verbs is the planner.
 //
 //   zico serve [--port 4200] [--live] [--pace 130]  ms between graph emissions
+//   zico init --agent codex|claude|both [--force]
 //   zico task "<objective>" [--budget 0.40]
 //   zico search "<query>" [--max-price 0.02] [--category FINANCIAL_ANALYSIS] [--limit 6]
 //   zico decide <resource> --reason "<why>"
@@ -11,6 +12,9 @@
 //   zico status
 //   zico export [taskId] [--out file.html] [--speed 1]   share a run as one file
 
+import { access, copyFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { log } from './events.js';
 import { startServer } from './server.js';
 import { preflight, explain } from './wallet.js';
@@ -20,6 +24,7 @@ const NL = String.fromCharCode(10);
 
 const argv = process.argv.slice(2);
 const verb = argv[0];
+const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -74,6 +79,7 @@ const money = (n) => `$${Number(n).toFixed(4)}`;
 
 switch (verb) {
   case 'serve': await serve(); break;
+  case 'init': await init(); break;
   case 'task': await task(); break;
   case 'search': await search(); break;
   case 'decide': await decide(); break;
@@ -82,7 +88,7 @@ switch (verb) {
   case 'done': await done(); break;
   case 'status': await status(); break;
   case 'export': await exportCmd(); break;
-  default: usage();
+  default: usage(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +159,57 @@ async function serve() {
         break;
     }
   });
+}
+
+async function init() {
+  const agent = flag('agent')?.toLowerCase();
+  const targets = {
+    codex: 'AGENTS.md',
+    claude: 'CLAUDE.md',
+  };
+
+  if (!agent || !['codex', 'claude', 'both'].includes(agent)) {
+    fail('usage: zico init --agent codex|claude|both [--force]');
+  }
+
+  const names = agent === 'both' ? Object.values(targets) : [targets[agent]];
+  const force = has('force');
+  const destination = process.cwd();
+  const copied = [];
+  const skipped = [];
+
+  for (const name of names) {
+    const source = join(PACKAGE_ROOT, name);
+    const target = join(destination, name);
+    try {
+      await access(source);
+    } catch {
+      fail(`the published package is missing its ${name} template`);
+    }
+
+    try {
+      await access(target);
+      if (!force) {
+        skipped.push(name);
+        continue;
+      }
+    } catch {
+      // The destination does not exist yet.
+    }
+
+    await copyFile(source, target);
+    copied.push(name);
+  }
+
+  if (copied.length) {
+    console.log(`${green('initialized')} ${copied.join(', ')} ${dim(`in ${destination}`)}`);
+  }
+  if (skipped.length) {
+    console.log(`${dim('kept')} ${skipped.join(', ')} ${dim('(already exists; use --force to replace)')}`);
+  }
+  if (!copied.length && !skipped.length) {
+    console.log(dim('nothing to initialize'));
+  }
 }
 
 async function task() {
@@ -237,11 +294,12 @@ async function status() {
   }
 }
 
-function usage() {
+function usage(exitCode = 0) {
   console.log(`
   ${bold('zico')} — live execution graph for the Circle Agent Stack
 
   ${dim('zico serve')} [--port 4200] [--live]     start the graph server
+  ${dim('zico init')} --agent codex|claude|both    add agent instructions here
   ${dim('zico task')} "<objective>" [--budget N]  begin a run
   ${dim('zico search')} "<query>" [--max-price N] search the marketplace
   ${dim('zico decide')} <resource> --reason "…"   record the choice and why
@@ -252,6 +310,7 @@ function usage() {
 
   Add --json to any verb for machine-readable output.
 `);
+  if (exitCode) process.exit(exitCode);
 }
 
 async function exportCmd() {

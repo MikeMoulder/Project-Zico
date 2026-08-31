@@ -27,6 +27,24 @@ When running directly from this repository, use:
 node src/cli.js serve --pace 220
 ```
 
+## Connect Zico to your coding agent
+
+From the project folder you want Codex or Claude Code to work in, install or
+run Zico and copy the matching instructions into that folder:
+
+```bash
+# Claude Code
+npx zico-agent-graph@0.1.2 init --agent claude
+
+# Codex
+npx zico-agent-graph@0.1.2 init --agent codex
+```
+
+You can use `--agent both` when the project will be opened by either tool.
+Then open that same folder in your coding agent. Existing `AGENTS.md` or
+`CLAUDE.md` files are kept unchanged; add `--force` only when you intend to
+replace one with Zico’s instructions.
+
 Open [http://localhost:4200](http://localhost:4200), then use a second terminal:
 
 ```bash
@@ -86,6 +104,8 @@ watch the run with play, pause, seek, and speed controls.
 | Command | Purpose |
 |---|---|
 | `node src/cli.js serve` | Start the visualizer in simulation mode |
+| `zico init --agent claude` | Add Claude Code instructions to the current project |
+| `zico init --agent codex` | Add Codex instructions to the current project |
 | `node src/cli.js serve --live` | Start with real Circle payments |
 | `node src/cli.js task "<objective>" --budget 0.40` | Start a run |
 | `node src/cli.js search "<query>"` | Find callable services; free |
