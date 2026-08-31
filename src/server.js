@@ -1,6 +1,11 @@
-// zico serve — holds the graph, serves the visualizer, and acts as the tool backend
-// for the CLI verbs. The agent (Claude Code, Codex, any host) drives it over HTTP;
-// every verb it calls becomes nodes and edges in the live graph.
+// zico serve — holds the graph and serves the visualizer.
+//
+// Zico is a listener. It does not search the marketplace, does not hold a
+// wallet, does not pay, and cannot veto. The Circle CLI performs every real
+// action independently, and the agent driving it reports what happened here to
+// be logged and drawn. Nothing in this file may move money or reach the network:
+// if a verb ever needs to *do* something rather than record it, it belongs in
+// the operator, not the observer.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -9,8 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import { EV, NODE } from './events.js';
-import { loadCatalog, search as searchCatalog } from './catalog.js';
-import { makeExecutor } from './executor.js';
+import { fromReported, hostOf } from './listings.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = join(ROOT, 'web');
@@ -34,12 +38,12 @@ function lastNodeOf(log, taskId) {
   return [(result ?? ns[ns.length - 1]).id];
 }
 
-export async function startServer({ log, port = 4200, live = false, pace = 130, wallet = null } = {}) {
+export async function startServer({ log, port = 4200, pace = 130 } = {}) {
   const clients = new Set();
-  const catalog = await loadCatalog();
-  const executor = live
-    ? makeExecutor('circle', { address: wallet?.address ?? null, chain: wallet?.chain ?? 'BASE' })
-    : makeExecutor('simulated');
+
+  // Every payment node this server draws was executed elsewhere and reported in.
+  // There is no other mode, so nothing downstream has to ask which one is active.
+  const MODE = 'recorded';
 
   // Session state so CLI verbs chain without the caller tracking node ids.
   const session = {
@@ -79,7 +83,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       session.searchCache.clear();
 
       await log.emitEvent(EV.TASK_CREATED, {
-        taskId, prompt: objective, budget: budget ?? null, mode: executor.mode,
+        taskId, prompt: objective, budget: budget ?? null, mode: MODE,
       });
 
       const planNode = `node_${shortId()}`;
@@ -94,9 +98,19 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       return { taskId, planNode, budget: session.budget };
     },
 
-    async search({ query, maxPrice, category, limit = 6 }) {
+    // Records a search the operator already ran. `results` is whatever
+    // `circle services search --output json` printed; Zico parses and draws it
+    // but never issues the query itself.
+    async search({ query, results: reported, maxPrice, category, limit = 6 }) {
       requireTask();
       const { taskId } = session;
+
+      if (reported === undefined || reported === null) {
+        throw new Error(
+          'search results must be reported — run `circle services search "<query>" --output json` '
+          + 'and pass its output (zico search "<query>" --results-file <path>, or pipe it in)',
+        );
+      }
 
       // Re-running a query used to emit a fresh search node and a fresh block of
       // candidates, so probing the marketplace a few times fanned the graph out
@@ -110,7 +124,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
         session.lastSearchNode = cached.searchNode;
         session.lastSearch = new Map(cached.results.map((s) => [s.resource, s]));
         return {
-          query, reused: true, found: cached.results.length, scanned: catalog.callable,
+          query, reused: true, found: cached.results.length, reportedCount: cached.reportedCount,
           results: cached.results.map(shapeResult),
         };
       }
@@ -137,12 +151,16 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       }
       session.lastSearch.clear();
 
-      const results = searchCatalog(catalog, query, {
-        maxPrice: maxPrice ?? Infinity,
-        category: category ?? null,
-        gaslessOnly: false,
-        limit,
-      });
+      // The operator's filters are applied only so the graph matches what they
+      // saw on screen — they are presentation, not gatekeeping. Ordering is left
+      // exactly as reported: Circle already ranked these, and re-sorting would
+      // show a different list than the one the decision was actually made from.
+      const all = fromReported(reported);
+      const reportedCount = all.length;
+      const results = all
+        .filter((s) => (maxPrice == null ? true : s.price <= maxPrice))
+        .filter((s) => (category ? s.category === category : true))
+        .slice(0, limit);
 
       // A result set is one node, not one node per hit. Thirty boxes reading
       // "agentmail" told the operator nothing that "5 candidates" does not, and
@@ -173,17 +191,17 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
         session.candidates.set(s.resource, s);
         session.lastSearch.set(s.resource, s);
       }
-      session.searchCache.set(cacheKey, { searchNode, groupNode, results });
+      session.searchCache.set(cacheKey, { searchNode, groupNode, results, reportedCount });
 
       await log.emitEvent(EV.NODE_COMPLETED, {
         taskId, nodeId: searchNode,
-        output: { query, found: results.length, scanned: catalog.callable },
+        output: { query, found: results.length, reported: reportedCount },
       });
 
       return {
         query,
         found: results.length,
-        scanned: catalog.callable,
+        reportedCount,
         results: results.map(shapeResult),
       };
     },
@@ -243,12 +261,27 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       return { decisionNode, chosen: slim(chosen), consideredCount: considered.length };
     },
 
-    async call({ resource, input }) {
+    // The only payment path. The operator (Circle CLI) already paid and holds
+    // the true cost, txHash and response; Zico draws the node from that report.
+    async record({ resource, input, output, cost, txHash, error, brand, network, gasless }) {
       requireTask();
       const { taskId } = session;
-      const service = session.candidates.get(resource)
-        ?? catalog.services.find((s) => s.resource === resource);
-      if (!service) throw new Error(`unknown service ${resource}`);
+
+      // A logger records what it is told. A resource the run never searched for
+      // is routine — the operator may pay something it found elsewhere — and is
+      // never grounds to refuse an event describing money that already moved.
+      const known = session.candidates.get(resource);
+      const service = known ?? {
+        resource,
+        brand: brand ?? hostOf(resource),
+        provider: brand ?? hostOf(resource),
+        category: 'UNREPORTED',
+        network: network ?? null,
+        gasless: gasless ?? false,
+        price: Number(cost) || 0,
+        description: 'executed by Circle CLI · not seen in this run’s search',
+        method: 'POST',
+      };
 
       const parents = [session.lastDecisionNode ?? session.candidateNodes.get(resource) ?? session.planNode]
         .filter(Boolean);
@@ -262,51 +295,39 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
       });
       await log.emitEvent(EV.NODE_STARTED, { taskId, nodeId });
 
-      const task = log.project().tasks.find((t) => t.id === taskId);
-      const remaining = session.budget === null || session.budget === undefined
-        ? Infinity
-        : Number(session.budget) - Number(task?.spent ?? 0);
-      if (service.price > remaining + 1e-9) {
-        const error = `budget cap reached: ${service.brand} costs $${service.price.toFixed(4)}, only $${Math.max(0, remaining).toFixed(4)} remains`;
-        await log.emitEvent(EV.NODE_FAILED, { taskId, nodeId, error });
-        return { ok: false, error, nodeId };
+      // A reported failure is still a real outcome — surface it, don't drop it.
+      if (error) {
+        await log.emitEvent(EV.NODE_FAILED, { taskId, nodeId, error: String(error) });
+        return { ok: false, error: String(error), nodeId };
       }
 
-      // Circle's CLI enforces this cap at payment time too. Keep it tight to
-      // the discovered price so a stale listing cannot spend the whole budget.
-      const maxAmount = Math.min(service.price, remaining);
-      const res = await executor.call(service, input ?? {}, { maxAmount });
+      // Trust the reported figure: it is what actually settled onchain, which
+      // is the whole point of recording rather than estimating. The listed price
+      // is only a fallback for a caller that supplies nothing — the two diverge
+      // whenever a seller reprices between discovery and payment.
+      const spent = Number(cost ?? service.price) || 0;
 
-      if (!res.ok) {
-        await log.emitEvent(EV.NODE_FAILED, { taskId, nodeId, error: res.error });
-        return { ok: false, error: res.error, nodeId };
-      }
-
-      if (res.cost > 0) {
+      if (spent > 0) {
         const payNode = `node_${shortId()}`;
         await log.emitEvent(EV.NODE_ADDED, {
           taskId, nodeId: payNode, parents: [nodeId],
           nodeType: NODE.PAYMENT,
-          name: executor.mode === 'circle'
-            ? `$${res.cost.toFixed(4)} USDC`
-            : `estimate $${res.cost.toFixed(4)} USDC`,
-          description: executor.mode === 'circle'
-            ? (service.gasless ? 'circle gateway · gasless' : 'x402 · onchain')
-            : 'simulation · no payment',
+          name: `$${spent.toFixed(4)} USDC`,
+          description: service.gasless ? 'circle gateway · gasless' : 'x402 · onchain',
           service: slim(service),
         });
         await log.emitEvent(EV.PAYMENT, {
           taskId, nodeId: payNode,
-          amount: res.cost, currency: 'USDC',
+          amount: spent, currency: 'USDC',
           service: service.brand, network: service.network,
           rail: service.gasless ? 'circle-gateway' : 'x402',
-          mode: executor.mode, txHash: res.txHash ?? null,
+          mode: 'recorded', txHash: txHash ?? null,
         });
         await log.emitEvent(EV.NODE_COMPLETED, { taskId, nodeId: payNode });
       }
 
-      await log.emitEvent(EV.NODE_COMPLETED, { taskId, nodeId, output: res.output });
-      return { ok: true, nodeId, cost: res.cost, output: res.output };
+      await log.emitEvent(EV.NODE_COMPLETED, { taskId, nodeId, output: output ?? null });
+      return { ok: true, nodeId, cost: spent, output: output ?? null };
     },
 
     async note({ text, type = NODE.ANALYSIS, parents, task }) {
@@ -358,6 +379,8 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
     if (!session.taskId) throw new Error('no active task — run "zico task \'<objective>\'" first');
   }
 
+  const hostOf = (u) => { try { return new URL(u).host; } catch { return String(u).slice(0, 60); } };
+
   const slim = (s) => ({
     brand: s.brand, provider: s.provider, resource: s.resource,
     category: s.category, network: s.network, gasless: s.gasless, price: s.price,
@@ -392,12 +415,13 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
     if (url.pathname === '/api/session') {
       return json(res, 200, {
         taskId: session.taskId, budget: session.budget,
-        catalog: { callable: catalog.callable, listings: catalog.totalListings },
-        mode: executor.mode,
+        mode: MODE,
       });
     }
 
-    const verb = /^\/api\/(task|search|decide|call|note|done)$/.exec(url.pathname);
+    // No `call`: Zico has no execution path. Payments are made by the Circle CLI
+    // and arrive here through `record`.
+    const verb = /^\/api\/(task|search|decide|record|note|done)$/.exec(url.pathname);
     if (verb) {
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       try {
@@ -428,8 +452,7 @@ export async function startServer({ log, port = 4200, live = false, pace = 130, 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, () => resolve({
-      server, port, url: `http://localhost:${port}`,
-      catalog, mode: executor.mode,
+      server, port, url: `http://localhost:${port}`, mode: MODE,
     }));
   });
 }

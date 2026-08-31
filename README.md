@@ -7,12 +7,14 @@ The agent does the work. Zico gives you a clear window into what happened:
 what it searched, what it considered, what it chose, what it paid, and what it
 learned.
 
-## Try it without a wallet
+Zico is a listener. The Circle CLI performs every real action, and the agent
+reports it here to be logged and drawn. Zico holds no wallet, makes no
+payments, and queries no marketplace — so it can never show you something
+different from what actually happened.
 
-Simulation uses the real Circle marketplace catalog and prices, but never
-makes a payment.
+## Install
 
-Requirements: Node.js 20.18.2 or newer.
+Requirements: Node.js 20.18.2 or newer. No wallet is needed to run the server.
 
 When the package is published, install it globally:
 
@@ -49,23 +51,28 @@ Open [http://localhost:4200](http://localhost:4200), then use a second terminal:
 
 ```bash
 node src/cli.js task "Research the current price of ETH" --budget 0.40
-node src/cli.js search "token price"
+circle services search "token price" --output json | node src/cli.js search "token price"
 ```
 
-Copy a resource URL from the search results and continue:
+Circle runs the search; Zico records the result set you actually saw. Copy a
+resource URL from it and continue:
 
 ```bash
 node src/cli.js decide "<resource-url>" --reason "best fit for the question"
-node src/cli.js call "<resource-url>" --input '{"symbol":"ETH"}'
+
+circle services pay "<resource-url>" --data '{"symbol":"ETH"}' --max-amount 0.05 --output json
+node src/cli.js record "<resource-url>" --cost <actual> --tx <hash> --output '<response>'
+
 node src/cli.js done --summary "Finished the research."
 ```
 
-Search is free. In simulation, calls show estimated cost and do not move money.
+Search is free. `circle services pay` spends real USDC; Zico records only the
+figure that settled.
 
 ## Use real Circle services
 
-Live mode uses a real Agent Wallet and real USDC. Do not use it until you are
-ready to authorize and fund a wallet.
+Paid calls use a real Agent Wallet and real USDC. Set that up before you run
+one — Zico itself needs nothing.
 
 In your coding agent, paste:
 
@@ -74,19 +81,18 @@ Run curl -sL https://agents.circle.com/skills/setup.md and follow the returned s
 ```
 
 Follow Circle’s instructions to install the CLI, accept the terms, authenticate
-with the email OTP, create or select an Agent Wallet, and fund it. Then start
-Zico in live mode:
+with the email OTP, create or select an Agent Wallet, and fund it. Zico needs no
+setup of its own — the same `serve` command covers every run:
 
 ```bash
-node src/cli.js serve --live --pace 220
+node src/cli.js serve --pace 220
 ```
 
-Zico checks the Circle CLI, login, wallet, and balance before it starts. It
-also enforces the task budget defensively and sends Circle a maximum payment
-cap. Circle remains the authoritative spending-policy layer.
+Enforce budgets with `circle services pay --max-amount`. That is the only place
+a cap can actually stop a transfer, and Circle remains the authoritative
+spending-policy layer. Zico cannot refuse a payment; it only records one.
 
-The browser labels live activity separately from simulation. Successful
-payments show their payment rail and transaction hash in the inspector.
+Recorded payments show their payment rail and transaction hash in the inspector.
 
 ## Share a finished run
 
@@ -103,23 +109,26 @@ watch the run with play, pause, seek, and speed controls.
 
 | Command | Purpose |
 |---|---|
-| `node src/cli.js serve` | Start the visualizer in simulation mode |
+| `node src/cli.js serve` | Start the visualizer |
 | `zico init --agent claude` | Add Claude Code instructions to the current project |
 | `zico init --agent codex` | Add Codex instructions to the current project |
-| `node src/cli.js serve --live` | Start with real Circle payments |
 | `node src/cli.js task "<objective>" --budget 0.40` | Start a run |
-| `node src/cli.js search "<query>"` | Find callable services; free |
+| `circle services search "<q>" --output json \| node src/cli.js search "<q>"` | Record a search Circle ran |
 | `node src/cli.js decide "<resource>" --reason "<why>"` | Record a choice |
-| `node src/cli.js call "<resource>" --input '<json>'` | Call a service |
+| `node src/cli.js record "<resource>" --cost N --tx 0x…` | Record a payment Circle made |
 | `node src/cli.js note "<text>"` | Add an analysis or synthesis note |
 | `node src/cli.js done --summary "<result>"` | Finish the run |
 | `node src/cli.js export --out demo.html` | Create a shareable replay |
 
 ## Important
 
-Zico is an observer, not the agent or planner. For the graph to update, the
-agent must drive the Zico commands above. The browser is read-only; commands
-and decisions stay in the terminal.
+Zico is an observer, not the agent, planner, or operator. For the graph to
+update, the agent must report each step with the commands above. The browser is
+read-only; commands and decisions stay in the terminal.
+
+Because Zico only ever records what it is told, a figure reported incorrectly
+becomes a figure shown incorrectly. The graph is exactly as honest as the agent
+writing to it.
 
 For a different port:
 

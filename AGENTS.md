@@ -1,8 +1,12 @@
 # Zico agent instructions
 
-Use Zico as the execution observer for Circle Agent Stack work. You are still
-the planner and decision-maker; Zico records the task, marketplace search,
-alternatives, decisions, calls, payments, failures, and final result.
+Zico is a listener. The Circle CLI performs every real action — search, payment,
+swap, transfer — and you drive it directly. Zico is told what happened so it can
+log and render the run. It holds no wallet, makes no payments, and queries no
+marketplace.
+
+Never route an action through Zico to make it happen. Do the work with `circle`,
+then report it.
 
 ## Start the visualizer
 
@@ -17,19 +21,29 @@ available at `http://localhost:4200/api/session`.
   with available browser tools when possible.
 
 The browser is read-only. Do not wait for the browser to provide input.
+Starting the server needs no wallet, no login, and no funds — it only listens.
 
-## Route work through Zico
+## Report work to Zico
 
 For every Circle marketplace task, use this sequence:
 
 1. `zico task "<objective>" --budget <amount>` when the task begins.
-2. `zico search "<capability>" --max-price <amount>` to find services.
+2. `circle services search "<capability>" --output json | zico search "<capability>"`
+   — Circle runs the query; Zico records the result set you actually saw.
 3. Review the returned descriptions, prices, schemas, networks, and providers.
+   `circle services inspect <url>` shows pricing and input schema without paying.
 4. `zico decide "<resource-url>" --reason "<specific reason>"` after choosing.
-5. `zico call "<resource-url>" --input '<json>'` to invoke the service.
+5. `circle services pay "<resource-url>" --data '<json>' --max-amount <cap> --output json`
+   to invoke the service, then
+   `zico record "<resource-url>" --cost <actual> --tx <hash> --output '<response>'`
+   to put it on the graph.
 6. Use `zico note "<finding>" [--type analysis|synthesis]` for important
    analysis or corrections. Pass `--parents <id,id>` to merge branches.
 7. `zico done --summary "<truthful result>"` when the task is complete.
+
+Record the figure that actually settled, not the listed price — a seller may
+reprice between discovery and payment. Pass `--error "<message>"` to
+`zico record` when a paid call fails; a failed attempt belongs in the graph.
 
 Search broadly once instead of probing with several near-identical queries.
 Re-running the same query reuses its existing node, but every new phrasing adds
@@ -40,15 +54,16 @@ Results cover both Circle Gateway sellers and vanilla x402 sellers. Read the
 a vanilla seller needs on-chain USDC on that seller's own chain and settles a
 block later. Both are callable; the difference is speed and which balance pays.
 
-Search is free. A live `zico call` can spend real USDC. Never make a live paid
-call without the user's explicit approval and a clear task budget. Simulation
-is the default and does not move money.
+Search is free. A `circle services pay` call spends real USDC. Never make a paid
+call without the user's explicit approval and a clear budget. Enforce the budget
+with `--max-amount` — that is the only place a cap can actually stop a transfer.
+Zico cannot refuse anything.
 
-Do not call `circle services pay` directly for a task that should appear in the
-graph. Use Zico's `call` command so the payment and result are recorded.
+## Actions that are not marketplace calls
 
-The catalog is cached for 24 hours. If a service you expect is missing, say so
-plainly rather than reaching for `circle services pay` to work around it.
+Swaps, transfers, and bridges have no `record` verb — that verb is for paid
+service calls. Run them with `circle wallet …` and capture them with
+`zico note`, including the transaction hash and confirmed state.
 
 ## Circle setup and safety
 
@@ -65,7 +80,8 @@ real payment on the user's behalf without their direct approval.
 ## Finish and share
 
 Use the real service response and show failures honestly. Do not hide errors or
-silently retry paid calls. To make a standalone replay, run:
+silently retry paid calls. Zico records what it is told, so a wrong figure
+reported here becomes a wrong figure on the graph. To make a standalone replay:
 
 ```bash
 zico export --out zico-demo.html

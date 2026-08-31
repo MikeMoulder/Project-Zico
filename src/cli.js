@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// zico — marketplace tools + live graph. The agent driving these verbs is the planner.
+// zico — the graph. The agent driving these verbs is the planner; the Circle
+// CLI is the operator. Every verb here records something that already happened.
 //
-//   zico serve [--port 4200] [--live] [--pace 130]  ms between graph emissions
+//   zico serve [--port 4200] [--pace 130]  ms between graph emissions
 //   zico init --agent codex|claude|both [--force]
 //   zico task "<objective>" [--budget 0.40]
-//   zico search "<query>" [--max-price 0.02] [--category FINANCIAL_ANALYSIS] [--limit 6]
+//   zico search "<query>" [--results-file <path>] [--max-price 0.02] [--limit 6]
 //   zico decide <resource> --reason "<why>"
-//   zico call <resource> --input '{"q":"..."}'
+//   zico record <resource> --cost 0.02 [--tx 0x…] [--output '{…}']
 //   zico note "<text>" [--type analysis|synthesis]
 //   zico done --summary "<result>"
 //   zico status
 //   zico export [taskId] [--out file.html] [--speed 1]   share a run as one file
 
-import { access, copyFile } from 'node:fs/promises';
+import { access, copyFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log } from './events.js';
 import { startServer } from './server.js';
-import { preflight, explain } from './wallet.js';
 import { exportRun } from './export.js';
 
 const NL = String.fromCharCode(10);
@@ -84,6 +84,7 @@ switch (verb) {
   case 'search': await search(); break;
   case 'decide': await decide(); break;
   case 'call': await call(); break;
+  case 'record': await record(); break;
   case 'note': await note(); break;
   case 'done': await done(); break;
   case 'status': await status(); break;
@@ -94,38 +95,17 @@ switch (verb) {
 // ---------------------------------------------------------------------------
 
 async function serve() {
-  const live = has('live');
   const restored = await log.restore();
   const pace = flag('pace') !== null ? Number(flag('pace')) : 130;
 
-  // Live mode spends real USDC. Verify the whole chain — CLI, login, wallet,
-  // funding — before binding a port, so failures arrive with instructions
-  // instead of halfway through a run the graph has already started drawing.
-  let wallet = null;
-  if (live) {
-    process.stdout.write(dim('  checking Circle wallet… '));
-    wallet = await preflight({ address: flag('address') ?? null });
-    if (!wallet.ok) {
-      console.log(red('failed'));
-      console.log();
-      console.log(explain(wallet).split(NL).map((l) => '  ' + l).join(NL));
-      console.log();
-      process.exit(1);
-    }
-    console.log(green('ok'));
-  }
-
-  const { url, catalog, mode } = await startServer({ log, port: PORT, live, pace, wallet });
+  // No preflight, no wallet, no executor. Zico logs what the Circle CLI reports;
+  // it has nothing to verify before it can start listening.
+  const { url } = await startServer({ log, port: PORT, pace });
 
   console.log();
-  console.log(`  ${bold('zico')} ${dim('· live execution graph for the Circle Agent Stack')}`);
+  console.log(`  ${bold('zico')} ${dim('· execution graph for the Circle Agent Stack')}`);
   console.log(`  ${dim('graph')}    ${cyan(url)}`);
-  console.log(`  ${dim('catalog')}  ${catalog.callable} callable of ${catalog.totalListings} listings`);
-  console.log(`  ${dim('mode')}     ${mode === 'circle' ? red('LIVE — real USDC on Base') : 'simulated (no payments)'}`);
-  if (wallet?.ok) {
-    console.log(`  ${dim('wallet')}   ${wallet.address}`);
-    console.log(`  ${dim('balance')}  ${wallet.usable.toFixed(4)} USDC ${dim(`(gateway ${wallet.balances.gateway.toFixed(4)} · onchain ${wallet.balances.onchain.toFixed(4)})`)}`);
-  }
+  console.log(`  ${dim('role')}     observer — the Circle CLI executes, Zico records`);
   if (restored) console.log(`  ${dim('history')}  ${restored} previous run(s) restored`);
   console.log();
   console.log(dim('  waiting for an agent to drive it — zico task "<objective>"'));
@@ -224,16 +204,30 @@ async function task() {
 
 async function search() {
   const query = positional();
-  if (!query) fail('usage: zico search "<query>" [--max-price 0.02] [--category X] [--limit 6]');
+  if (!query) {
+    fail('usage: circle services search "<query>" --output json | zico search "<query>"'
+      + `${NL}         (or: zico search "<query>" --results-file <path> | --results '<json>')`);
+  }
+
+  // Zico does not query the marketplace. The operator runs `circle services
+  // search` and reports the result, so the graph shows exactly the list the
+  // decision was made from.
+  const results = await readReported();
+  if (results === null) {
+    fail('no search results on stdin — run `circle services search "' + query + '" --output json`'
+      + `${NL}       and pipe it here, or pass --results-file <path>`);
+  }
+
   const out = await api('search', {
     query,
+    results,
     maxPrice: flag('max-price') ? Number(flag('max-price')) : undefined,
     category: flag('category') ?? undefined,
     limit: flag('limit') ? Number(flag('limit')) : undefined,
   });
   if (has('json')) return console.log(JSON.stringify(out, null, 2));
 
-  console.log(`${green('found')} ${out.found} of ${out.scanned} callable services ${dim(`· "${out.query}"`)}\n`);
+  console.log(`${green('recorded')} ${out.found} of ${out.reportedCount} reported services ${dim(`· "${out.query}"`)}\n`);
   for (const r of out.results) {
     console.log(`  ${gold(money(r.price).padEnd(9))} ${bold(r.brand.padEnd(16))} ${dim(r.category)}`);
     console.log(`  ${' '.repeat(9)} ${r.description.slice(0, 78)}`);
@@ -244,6 +238,35 @@ async function search() {
   console.log(dim('choose one:  zico decide <resource> --reason "<why>"'));
 }
 
+/**
+ * Collect a reported result set from --results, --results-file, or a pipe.
+ * Returns null when the operator gave us nothing, so the caller can explain
+ * what to run rather than recording an empty search as though it found nothing.
+ */
+async function readReported() {
+  const inline = flag('results');
+  if (inline) {
+    try { return JSON.parse(inline); } catch { fail('--results must be valid JSON'); }
+  }
+
+  const file = flag('results-file');
+  if (file) {
+    let text;
+    try { text = await readFile(file, 'utf8'); }
+    catch (e) { fail(`cannot read ${file}: ${e.code ?? e.message}`); }
+    try { return JSON.parse(text); } catch { fail(`${file} is not valid JSON`); }
+  }
+
+  // A TTY means nothing is piped in; reading would hang waiting for the user.
+  if (process.stdin.isTTY) return null;
+
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { fail('piped input is not valid JSON'); }
+}
+
 async function decide() {
   const choose = positional();
   if (!choose) fail('usage: zico decide <resource> --reason "<why>"');
@@ -252,19 +275,44 @@ async function decide() {
   console.log(`${green('selected')} ${bold(out.chosen.brand)} ${gold(money(out.chosen.price))} ${dim(`· ${out.consideredCount} considered`)}`);
 }
 
-async function call() {
+// `zico call` used to pay for the service itself. It no longer exists: Zico
+// does not hold a wallet and does not transact. Kept as a signpost so the old
+// command explains the split instead of dying on "unknown verb".
+function call() {
+  const resource = positional() ?? '<resource>';
+  fail([
+    'zico no longer executes calls — the Circle CLI pays, Zico records.',
+    '',
+    '  1. ' + bold(`circle services pay ${resource} --data '{…}' --max-amount <cap>`),
+    '  2. ' + bold(`zico record ${resource} --cost <actual> --tx <hash> --output '<response>'`),
+    '',
+    dim('  The cap is enforced by Circle at payment time, which is the only place'),
+    dim('  it can actually stop a transfer.'),
+  ].join(NL));
+}
+
+async function record() {
   const resource = positional();
-  if (!resource) fail(`usage: zico call <resource> --input '{"q":"..."}'`);
-  let input = {};
-  const raw = flag('input');
-  if (raw) {
-    try { input = JSON.parse(raw); } catch { fail('--input must be valid JSON'); }
-  }
-  const out = await api('call', { resource, input });
+  if (!resource) fail(`usage: zico record <resource> --cost 0.02 [--tx 0x…] [--input '{…}'] [--output '{…}'] [--error "…"]`);
+  const parse = (name) => {
+    const raw = flag(name);
+    if (!raw) return undefined;
+    try { return JSON.parse(raw); } catch { fail(`--${name} must be valid JSON`); }
+  };
+  const cost = flag('cost') !== null ? Number(flag('cost')) : undefined;
+  if (cost !== undefined && !Number.isFinite(cost)) fail('--cost must be a number');
+
+  const out = await api('record', {
+    resource,
+    input: parse('input') ?? {},
+    output: parse('output') ?? null,
+    cost,
+    txHash: flag('tx') ?? undefined,
+    error: flag('error') ?? undefined,
+  });
   if (has('json')) return console.log(JSON.stringify(out, null, 2));
-  if (!out.ok) fail(out.error);
-  console.log(`${green('ok')} ${dim(`paid ${money(out.cost)} USDC`)}`);
-  console.log(JSON.stringify(out.output, null, 2));
+  if (!out.ok) return console.log(`${red('recorded failure')} ${dim(out.error)}`);
+  console.log(`${green('recorded')} ${dim(`${money(out.cost)} USDC — executed externally`)}`);
 }
 
 async function note() {
@@ -286,7 +334,6 @@ async function status() {
   const s = await api('session');
   const state = await api('state');
   console.log(`${dim('server ')} ${BASE} ${dim(`· ${s.mode}`)}`);
-  console.log(`${dim('catalog')} ${s.catalog.callable} callable of ${s.catalog.listings}`);
   console.log(`${dim('task   ')} ${s.taskId ?? dim('none active')}`);
   console.log(`${dim('runs   ')} ${state.tasks.length} · ${state.nodes.length} nodes`);
   for (const t of state.tasks.slice(-5)) {
@@ -296,17 +343,25 @@ async function status() {
 
 function usage(exitCode = 0) {
   console.log(`
-  ${bold('zico')} — live execution graph for the Circle Agent Stack
+  ${bold('zico')} — execution graph for the Circle Agent Stack
 
-  ${dim('zico serve')} [--port 4200] [--live]     start the graph server
+  ${dim('The Circle CLI does the work. Zico records it and draws the graph.')}
+  ${dim('Zico holds no wallet, makes no payments, and queries no marketplace.')}
+
+  ${dim('zico serve')} [--port 4200] [--pace N]    start the graph server
   ${dim('zico init')} --agent codex|claude|both    add agent instructions here
   ${dim('zico task')} "<objective>" [--budget N]  begin a run
-  ${dim('zico search')} "<query>" [--max-price N] search the marketplace
+  ${dim('zico search')} "<query>"                 record a search you already ran
   ${dim('zico decide')} <resource> --reason "…"   record the choice and why
-  ${dim('zico call')} <resource> --input '{…}'    pay for and invoke it
+  ${dim('zico record')} <resource> --cost N [--tx …]  record a payment Circle already made
   ${dim('zico note')} "<text>" [--parents a,b]     add a reasoning node (merges branches)
   ${dim('zico done')} --summary "<result>"        close the run
   ${dim('zico status')}                           what is running
+
+  ${dim('Reporting a search and a payment:')}
+    circle services search "email" --output json | zico search "email"
+    circle services pay <resource> --data '{…}' --max-amount 0.05 --output json
+    zico record <resource> --cost 0.02 --tx 0x… --output '<response>'
 
   Add --json to any verb for machine-readable output.
 `);

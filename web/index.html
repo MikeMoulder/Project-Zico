@@ -68,8 +68,7 @@ select{font-family:var(--sans);font-size:11.5px;color:var(--ink-2);background:va
 select:focus-visible{outline:2px solid var(--run);outline-offset:2px}
 .runtime{min-width:88px;gap:3px}
 .mode-value{font:600 10px/1.1 var(--mono);letter-spacing:.08em;color:var(--ink-3)}
-.mode-value.live{color:var(--bad)}
-.mode-value.simulated{color:var(--money)}
+.mode-value.recorded{color:var(--money)}
 .mode-value.replay{color:var(--run)}
 select:hover{border-color:var(--line-3);color:var(--ink)}
 select option{background:#0c0c0c;color:var(--ink)}
@@ -394,13 +393,15 @@ const stage=document.getElementById('stage');
 const nodes=new Map(), tasks=new Map();
 let currentTask=null, selected=null, evCount=0;
 
+// Two states only. Zico never executes, so there is no live/simulated split:
+// a running server is RECORDING what the Circle CLI did, and a snapshot is a
+// REPLAY of it. Either way every figure shown is real money that already moved.
 function setMode(mode){
   const replay=SNAPSHOT;
-  const live=!replay&&(mode==='circle'||mode==='live');
   const el=document.getElementById('mode');
-  el.textContent=replay?'REPLAY':live?'LIVE':'SIMULATED';
-  el.className='mode-value '+(replay?'replay':live?'live':'simulated');
-  document.getElementById('spendLabel').textContent=live?'Spent USDC':replay?'Recorded USDC':'Estimated USDC';
+  el.textContent=replay?'REPLAY':'RECORDING';
+  el.className='mode-value '+(replay?'replay':'recorded');
+  document.getElementById('spendLabel').textContent=replay?'Recorded USDC':'Spent USDC';
 }
 
 const ST={
@@ -599,7 +600,7 @@ function paint(){
     if(el.dataset.sig!==sig){
       el.dataset.sig=sig;
       const money=cost>0
-        ? `<span class="sp ${n.mode==='circle'?'paid':'est'}">${cost.toFixed(4)}</span>` : '';
+        ? `<span class="sp paid">${cost.toFixed(4)}</span>` : '';
       const svc=n.type==='candidate'||n.type==='tool_call';
       const title=svc&&n.description?n.description:n.name;
       const under=svc?'':(n.description||'');
@@ -731,7 +732,7 @@ function inspect(n){
   if(s.method)h+=row('method',s.method,true);
   if(s.network)h+=row('network',s.network,true);
   if(s.brand)h+=row('rail',s.gasless?'circle gateway · gasless':'x402 · onchain');
-  if(n.mode)h+=row('mode',n.mode==='circle'?'live':'simulated',true);
+  if(n.mode)h+=row('executed by','circle cli · recorded here',true);
   if(n.txHash)h+=row('tx hash',n.txHash,true);
   if(n.rail)h+=row('payment rail',n.rail,true);
   if(n.cost>0)h+=row('paid',n.cost.toFixed(4)+' USDC',true);
@@ -835,7 +836,7 @@ document.getElementById('runs').onchange=e=>{
 /* ── stream. ?snapshot=1 hydrates once and opens no stream. ── */
 const SNAPSHOT=new URLSearchParams(location.search).has('snapshot');
 let settle=null;
-setMode(SNAPSHOT?'replay':'simulated');
+setMode(SNAPSHOT?'replay':'recorded');
 
 if(SNAPSHOT){
   fetch('/api/state').then(r=>r.json()).then(s=>{
