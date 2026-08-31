@@ -7,10 +7,39 @@
 
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 
-const DATA_ROOT = process.env.ZICO_DATA_DIR ?? join(process.cwd(), '.zico');
+/**
+ * Locate the run store.
+ *
+ * History used to live at `cwd/.zico` flat, so launching the server from a
+ * subdirectory of the same project silently started an empty history — the
+ * previous runs were still on disk, just under a path nobody was reading, which
+ * is indistinguishable from data loss. Walk up for an existing `.zico` the way
+ * git finds `.git`, so any directory inside a project resolves to one store.
+ *
+ * Falls back to `cwd/.zico` when no ancestor has one, which keeps first-run
+ * behaviour and per-project isolation intact.
+ */
+function resolveDataRoot() {
+  if (process.env.ZICO_DATA_DIR) return process.env.ZICO_DATA_DIR;
+
+  const { root } = parse(process.cwd());
+  let dir = process.cwd();
+  while (true) {
+    const candidate = join(dir, '.zico');
+    if (existsSync(candidate)) return candidate;
+    if (dir === root) break;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return join(process.cwd(), '.zico');
+}
+
+export const DATA_ROOT = resolveDataRoot();
 const RUNS = join(DATA_ROOT, 'runs');
 
 export const EV = {

@@ -16,7 +16,7 @@
 import { access, copyFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { log } from './events.js';
+import { log, DATA_ROOT } from './events.js';
 import { startServer } from './server.js';
 import { exportRun } from './export.js';
 
@@ -106,7 +106,10 @@ async function serve() {
   console.log(`  ${bold('zico')} ${dim('· execution graph for the Circle Agent Stack')}`);
   console.log(`  ${dim('graph')}    ${cyan(url)}`);
   console.log(`  ${dim('role')}     observer — the Circle CLI executes, Zico records`);
-  if (restored) console.log(`  ${dim('history')}  ${restored} previous run(s) restored`);
+  // Always shown: an unexpected store is the difference between "no history"
+  // and "history you are not looking at", and only the path tells them apart.
+  console.log(`  ${dim('data')}     ${DATA_ROOT}`);
+  console.log(`  ${dim('history')}  ${restored ? `${restored} previous run(s) restored` : dim('no previous runs here')}`);
   console.log();
   console.log(dim('  waiting for an agent to drive it — zico task "<objective>"'));
   console.log();
