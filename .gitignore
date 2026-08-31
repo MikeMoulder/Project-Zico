@@ -7,3 +7,5 @@ node_modules/
 # Keep the public repository focused on the README.
 *.md
 !README.md
+!AGENTS.md
+!CLAUDE.md

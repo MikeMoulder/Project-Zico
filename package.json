@@ -1,6 +1,6 @@
 {
   "name": "zico-agent-graph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Live execution graph for AI agents using Circle Agent Stack services.",
   "bin": {
@@ -9,7 +9,9 @@
   "files": [
     "src",
     "web",
-    "README.md"
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md"
   ],
   "scripts": {
     "start": "node src/cli.js serve",
