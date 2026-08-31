@@ -34,10 +34,10 @@ run Zico and copy the matching instructions into that folder:
 
 ```bash
 # Claude Code
-npx zico-agent-graph@0.1.2 init --agent claude
+npx zico-agent-graph@0.1.3 init --agent claude
 
 # Codex
-npx zico-agent-graph@0.1.2 init --agent codex
+npx zico-agent-graph@0.1.3 init --agent codex
 ```
 
 You can use `--agent both` when the project will be opened by either tool.
